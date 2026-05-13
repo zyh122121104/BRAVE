@@ -45,6 +45,4 @@ python predict.py --excel /path/to/test.xlsx --weights ./weights_new/BRAVE/model
 
 Or: `--weights-dir ./weights_new/BRAVE --epoch 50`. Optional: `--out-txt results.txt`, `--label-col label2`.
 
-## Citation / code credit
-
-Swin Transformer follows the [official implementation](https://github.com/microsoft/Swin-Transformer) (see `model.py` header).
+## Citati
