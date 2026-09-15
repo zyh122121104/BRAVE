@@ -6,30 +6,18 @@ import numpy as np
 from typing import Optional
 
 
-
 def drop_path_f(x, drop_prob: float = 0., training: bool = False):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
-
-    This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
-    the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
-    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
-    changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
-    'survival rate' as the argument.
-
-    """
     if drop_prob == 0. or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
     random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-    random_tensor.floor_()  # binarize
+    random_tensor.floor_()
     output = x.div(keep_prob) * random_tensor
     return output
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
-    """
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
@@ -39,48 +27,20 @@ class DropPath(nn.Module):
 
 
 def window_partition(x, window_size: int):
-    """
-    Partition a feature map into non-overlapping windows of size ``window_size``.
-    Args:
-        x: (B, H, W, C)
-        window_size (int): window size(M)
-
-    Returns:
-        windows: (num_windows*B, window_size, window_size, C)
-    """
     B, H, W, C = x.shape
     x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
-    # permute: [B, H//Mh, Mh, W//Mw, Mw, C] -> [B, H//Mh, W//Mh, Mw, Mw, C]
-    # view: [B, H//Mh, W//Mw, Mh, Mw, C] -> [B*num_windows, Mh, Mw, C]
     windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
     return windows
 
 
 def window_reverse(windows, window_size: int, H: int, W: int):
-    """
-    Merge window tensors back into a single feature map.
-    Args:
-        windows: (num_windows*B, window_size, window_size, C)
-        window_size (int): Window size(M)
-        H (int): Height of image
-        W (int): Width of image
-
-    Returns:
-        x: (B, H, W, C)
-    """
     B = int(windows.shape[0] / (H * W / window_size / window_size))
-    # view: [B*num_windows, Mh, Mw, C] -> [B, H//Mh, W//Mw, Mh, Mw, C]
     x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
-    # permute: [B, H//Mh, W//Mw, Mh, Mw, C] -> [B, H//Mh, Mh, W//Mw, Mw, C]
-    # view: [B, H//Mh, Mh, W//Mw, Mw, C] -> [B, H, W, C]
     x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
     return x
 
 
 class PatchEmbed(nn.Module):
-    """
-    2D Image to Patch Embedding
-    """
     def __init__(self, patch_size=4, in_c=3, embed_dim=96, norm_layer=None):
         super().__init__()
         patch_size = (patch_size, patch_size)
@@ -93,33 +53,20 @@ class PatchEmbed(nn.Module):
     def forward(self, x):
         _, _, H, W = x.shape
 
-        # padding
-        # Pad H, W when they are not divisible by patch_size
         pad_input = (H % self.patch_size[0] != 0) or (W % self.patch_size[1] != 0)
         if pad_input:
-            # to pad the last 3 dimensions,
-            # (W_left, W_right, H_top,H_bottom, C_front, C_back)
             x = F.pad(x, (0, self.patch_size[1] - W % self.patch_size[1],
                           0, self.patch_size[0] - H % self.patch_size[0],
                           0, 0))
 
-        # Downsample by patch_size (stride = patch_size)
         x = self.proj(x)
         _, _, H, W = x.shape
-        # flatten: [B, C, H, W] -> [B, C, HW]
-        # transpose: [B, C, HW] -> [B, HW, C]
         x = x.flatten(2).transpose(1, 2)
         x = self.norm(x)
         return x, H, W
 
 
 class PatchMerging(nn.Module):
-    r""" Patch Merging Layer.
-
-    Args:
-        dim (int): Number of input channels.
-        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
-    """
 
     def __init__(self, dim, norm_layer=nn.LayerNorm):
         super().__init__()
@@ -128,39 +75,31 @@ class PatchMerging(nn.Module):
         self.norm = norm_layer(4 * dim)
 
     def forward(self, x, H, W):
-        """
-        x: B, H*W, C
-        """
         B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        assert L == H * W
 
         x = x.view(B, H, W, C)
 
-        # padding
-        # Pad H, W when they are not divisible by 2 (patch merge grid)
+
         pad_input = (H % 2 == 1) or (W % 2 == 1)
         if pad_input:
-            # to pad the last 3 dimensions, starting from the last dimension and moving forward.
-            # (C_front, C_back, W_left, W_right, H_top, H_bottom)
-            # Tensor layout is [B, H, W, C], which differs from some official NCHW pad docs
             x = F.pad(x, (0, 0, 0, W % 2, 0, H % 2))
 
-        x0 = x[:, 0::2, 0::2, :]  # [B, H/2, W/2, C]
-        x1 = x[:, 1::2, 0::2, :]  # [B, H/2, W/2, C]
-        x2 = x[:, 0::2, 1::2, :]  # [B, H/2, W/2, C]
-        x3 = x[:, 1::2, 1::2, :]  # [B, H/2, W/2, C]
-        x = torch.cat([x0, x1, x2, x3], -1)  # [B, H/2, W/2, 4*C]
-        x = x.view(B, -1, 4 * C)  # [B, H/2*W/2, 4*C]
+        x0 = x[:, 0::2, 0::2, :]
+        x1 = x[:, 1::2, 0::2, :]
+        x2 = x[:, 0::2, 1::2, :]
+        x3 = x[:, 1::2, 1::2, :]
+        x = torch.cat([x0, x1, x2, x3], -1)
 
         x = self.norm(x)
-        x = self.reduction(x)  # [B, H/2*W/2, 2*C]
+        x = self.reduction(x)
+        x = x.view(x.shape[0], -1, x.shape[-1])
 
         return x
 
 
 class Mlp(nn.Module):
-    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
-    """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
         out_features = out_features or in_features
@@ -182,43 +121,30 @@ class Mlp(nn.Module):
 
 
 class WindowAttention(nn.Module):
-    r""" Window based multi-head self attention (W-MSA) module with relative position bias.
-    It supports both of shifted and non-shifted window.
-
-    Args:
-        dim (int): Number of input channels.
-        window_size (tuple[int]): The height and width of the window.
-        num_heads (int): Number of attention heads.
-        qkv_bias (bool, optional):  If True, add a learnable bias to query, key, value. Default: True
-        attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.0
-        proj_drop (float, optional): Dropout ratio of output. Default: 0.0
-    """
 
     def __init__(self, dim, window_size, num_heads, qkv_bias=True, attn_drop=0., proj_drop=0.):
 
         super().__init__()
         self.dim = dim
-        self.window_size = window_size  # [Mh, Mw]
+        self.window_size = window_size
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
 
-        # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))  # [2*Mh-1 * 2*Mw-1, nH]
+            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))
 
-        # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing="ij"))  # [2, Mh, Mw]
-        coords_flatten = torch.flatten(coords, 1)  # [2, Mh*Mw]
-        # [2, Mh*Mw, 1] - [2, 1, Mh*Mw]
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # [2, Mh*Mw, Mh*Mw]
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # [Mh*Mw, Mh*Mw, 2]
-        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing="ij"))
+        coords_flatten = torch.flatten(coords, 1)
+
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()
+        relative_coords[:, :, 0] += self.window_size[0] - 1
         relative_coords[:, :, 1] += self.window_size[1] - 1
         relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
-        relative_position_index = relative_coords.sum(-1)  # [Mh*Mw, Mh*Mw]
+        relative_position_index = relative_coords.sum(-1)
         self.register_buffer("relative_position_index", relative_position_index)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -230,36 +156,21 @@ class WindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask: Optional[torch.Tensor] = None):
-        """
-        Args:
-            x: input features with shape of (num_windows*B, Mh*Mw, C)
-            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
-        """
-        # [batch_size*num_windows, Mh*Mw, total_embed_dim]
         B_, N, C = x.shape
-        # qkv(): -> [batch_size*num_windows, Mh*Mw, 3 * total_embed_dim]
-        # reshape: -> [batch_size*num_windows, Mh*Mw, 3, num_heads, embed_dim_per_head]
-        # permute: -> [3, batch_size*num_windows, num_heads, Mh*Mw, embed_dim_per_head]
         qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        # [batch_size*num_windows, num_heads, Mh*Mw, embed_dim_per_head]
-        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv.unbind(0)
 
-        # transpose: -> [batch_size*num_windows, num_heads, embed_dim_per_head, Mh*Mw]
-        # @: multiply -> [batch_size*num_windows, num_heads, Mh*Mw, Mh*Mw]
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
 
-        # relative_position_bias_table.view: [Mh*Mw*Mh*Mw,nH] -> [Mh*Mw,Mh*Mw,nH]
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # [nH, Mh*Mw, Mh*Mw]
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
         attn = attn + relative_position_bias.unsqueeze(0)
 
         if mask is not None:
-            # mask: [nW, Mh*Mw, Mh*Mw]
-            nW = mask.shape[0]  # num_windows
-            # attn.view: [batch_size, num_windows, num_heads, Mh*Mw, Mh*Mw]
-            # mask.unsqueeze: [1, nW, 1, Mh*Mw, Mh*Mw]
+
+            nW = mask.shape[0]
             attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
             attn = attn.view(-1, self.num_heads, N, N)
             attn = self.softmax(attn)
@@ -268,9 +179,6 @@ class WindowAttention(nn.Module):
 
         attn = self.attn_drop(attn)
 
-        # @: multiply -> [batch_size*num_windows, num_heads, Mh*Mw, embed_dim_per_head]
-        # transpose: -> [batch_size*num_windows, Mh*Mw, num_heads, embed_dim_per_head]
-        # reshape: -> [batch_size*num_windows, Mh*Mw, total_embed_dim]
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -278,21 +186,6 @@ class WindowAttention(nn.Module):
 
 
 class SwinTransformerBlock(nn.Module):
-    r""" Swin Transformer Block.
-
-    Args:
-        dim (int): Number of input channels.
-        num_heads (int): Number of attention heads.
-        window_size (int): Window size.
-        shift_size (int): Shift size for SW-MSA.
-        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
-        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
-        drop (float, optional): Dropout rate. Default: 0.0
-        attn_drop (float, optional): Attention dropout rate. Default: 0.0
-        drop_path (float, optional): Stochastic depth rate. Default: 0.0
-        act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
-        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
-    """
 
     def __init__(self, dim, num_heads, window_size=7, shift_size=0,
                  mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.,
@@ -324,45 +217,40 @@ class SwinTransformerBlock(nn.Module):
         x = self.norm1(x)
         x = x.view(B, H, W, C)
 
-        # pad feature maps to multiples of window size
-        # Pad the feature map so H and W are multiples of window_size
+
         pad_l = pad_t = 0
         pad_r = (self.window_size - W % self.window_size) % self.window_size
         pad_b = (self.window_size - H % self.window_size) % self.window_size
         x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
         _, Hp, Wp, _ = x.shape
 
-        # cyclic shift
+
         if self.shift_size > 0:
             shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
         else:
             shifted_x = x
             attn_mask = None
 
-        # partition windows
-        x_windows = window_partition(shifted_x, self.window_size)  # [nW*B, Mh, Mw, C]
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # [nW*B, Mh*Mw, C]
+        x_windows = window_partition(shifted_x, self.window_size)
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)
 
-        # W-MSA/SW-MSA
-        attn_windows = self.attn(x_windows, mask=attn_mask)  # [nW*B, Mh*Mw, C]
+        attn_windows = self.attn(x_windows, mask=attn_mask)
 
-        # merge windows
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)  # [nW*B, Mh, Mw, C]
-        shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # [B, H', W', C]
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+        shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)
 
-        # reverse cyclic shift
+
         if self.shift_size > 0:
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             x = shifted_x
 
         if pad_r > 0 or pad_b > 0:
-            # Crop away padding added above
             x = x[:, :H, :W, :].contiguous()
 
         x = x.view(B, H * W, C)
 
-        # FFN
+
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
@@ -370,23 +258,7 @@ class SwinTransformerBlock(nn.Module):
 
 
 class BasicLayer(nn.Module):
-    """
-    A basic Swin Transformer layer for one stage.
 
-    Args:
-        dim (int): Number of input channels.
-        depth (int): Number of blocks.
-        num_heads (int): Number of attention heads.
-        window_size (int): Local window size.
-        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
-        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
-        drop (float, optional): Dropout rate. Default: 0.0
-        attn_drop (float, optional): Attention dropout rate. Default: 0.0
-        drop_path (float | tuple[float], optional): Stochastic depth rate. Default: 0.0
-        norm_layer (nn.Module, optional): Normalization layer. Default: nn.LayerNorm
-        downsample (nn.Module | None, optional): Downsample layer at the end of the layer. Default: None
-        use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
-    """
 
     def __init__(self, dim, depth, num_heads, window_size,
                  mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0.,
@@ -398,7 +270,7 @@ class BasicLayer(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.shift_size = window_size // 2
 
-        # build blocks
+
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(
                 dim=dim,
@@ -413,19 +285,18 @@ class BasicLayer(nn.Module):
                 norm_layer=norm_layer)
             for i in range(depth)])
 
-        # patch merging layer
+
         if downsample is not None:
             self.downsample = downsample(dim=dim, norm_layer=norm_layer)
         else:
             self.downsample = None
 
     def create_mask(self, x, H, W):
-        # calculate attention mask for SW-MSA
-        # Ensure Hp and Wp are multiples of window_size
+
         Hp = int(np.ceil(H / self.window_size)) * self.window_size
         Wp = int(np.ceil(W / self.window_size)) * self.window_size
-        # Same layout as the feature map [B, H, W, C] for window_partition
-        img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)  # [1, Hp, Wp, 1]
+
+        img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)
         h_slices = (slice(0, -self.window_size),
                     slice(-self.window_size, -self.shift_size),
                     slice(-self.shift_size, None))
@@ -438,15 +309,15 @@ class BasicLayer(nn.Module):
                 img_mask[:, h, w, :] = cnt
                 cnt += 1
 
-        mask_windows = window_partition(img_mask, self.window_size)  # [nW, Mh, Mw, 1]
-        mask_windows = mask_windows.view(-1, self.window_size * self.window_size)  # [nW, Mh*Mw]
-        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)  # [nW, 1, Mh*Mw] - [nW, Mh*Mw, 1]
-        # [nW, Mh*Mw, Mh*Mw]
+        mask_windows = window_partition(img_mask, self.window_size)
+        mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
+        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+
         attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
         return attn_mask
 
     def forward(self, x, H, W):
-        attn_mask = self.create_mask(x, H, W)  # [nW, Mh*Mw, Mh*Mw]
+        attn_mask = self.create_mask(x, H, W)
         for blk in self.blocks:
             blk.H, blk.W = H, W
             if not torch.jit.is_scripting() and self.use_checkpoint:
@@ -461,7 +332,7 @@ class BasicLayer(nn.Module):
 
 
 class LightweightTemporalTransformer(nn.Module):
-    """Lightweight self-attention over time; I/O shape [B*T, H*W, C] (Swin token layout, dimension-preserving)."""
+
 
     def __init__(self, dim, num_heads, num_frames=16, num_layers=1, mlp_ratio=4.0,
                  drop_rate=0.0, attn_drop_rate=0.0, norm_layer=nn.LayerNorm):
@@ -472,6 +343,7 @@ class LightweightTemporalTransformer(nn.Module):
         self.num_heads = num_heads
         self.num_frames = num_frames
         self.num_layers = num_layers
+        self.temporal_pos_embed = nn.Parameter(torch.zeros(1, num_frames, dim))
         hidden_dim = int(dim * mlp_ratio)
         self.blocks = nn.ModuleList()
         for _ in range(num_layers):
@@ -484,30 +356,37 @@ class LightweightTemporalTransformer(nn.Module):
                     "mlp": Mlp(dim, hidden_dim, act_layer=nn.GELU, drop=drop_rate),
                 })
             )
+        self.context_proj = nn.Linear(dim, dim)
+        nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
 
     def forward(self, x, H, W):
-        # x: [B*T, L, C]; internally [B, T, C, L] as in the spec [B, 16, C, H*W]
+
         BT, L, C = x.shape
         assert L == H * W, "spatial token count mismatch"
         T = self.num_frames
         assert BT % T == 0, "batch*time must be divisible by num_frames"
         B = BT // T
-        x_seq = x.view(B, T, L, C).permute(0, 2, 1, 3).reshape(B * L, T, C)
+        x_spatial = x.view(B, T, L, C).permute(0, 1, 3, 2).contiguous()
+
+        x_seq = x_spatial.mean(dim=-1)
+        x_seq = x_seq + self.temporal_pos_embed[:, :T, :]
+
+
         for blk in self.blocks:
             shortcut = x_seq
             xa = blk["norm1"](x_seq)
             xa, _ = blk["attn"](xa, xa, xa, need_weights=False)
             x_seq = shortcut + xa
             x_seq = x_seq + blk["mlp"](blk["norm2"](x_seq))
-        x_out = x_seq.view(B, L, T, C).permute(0, 2, 1, 3).contiguous().view(BT, L, C)
+
+        temporal_context = self.context_proj(x_seq).unsqueeze(-1)
+        x_out = x_spatial + temporal_context
+        x_out = x_out.permute(0, 1, 3, 2).contiguous().view(BT, L, C)
         return x_out
 
 
 class BRAVE(nn.Module):
-    """BRAVE video classifier: time-batch merge, Swin stages, temporal modules after each merge, then pooled FC.
 
-    Accepts ``[B, T, H, W, C]`` (channels last) or ``[B, T, C, H, W]``; convolutions run in NCHW internally.
-    """
 
     def __init__(
         self,
@@ -530,7 +409,7 @@ class BRAVE(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        _ = kwargs  # ignore unknown constructor kwargs (backward compatible with older factory calls)
+        _ = kwargs
 
         self.num_classes = num_classes
         self.num_layers = len(depths)
@@ -541,7 +420,6 @@ class BRAVE(nn.Module):
         self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
         self.mlp_ratio = mlp_ratio
 
-        # Patch partition (4×4) + linear embed on [B*T, C, H, W]
         self.patch_embed = PatchEmbed(
             patch_size=patch_size,
             in_c=in_chans,
@@ -570,7 +448,6 @@ class BRAVE(nn.Module):
             )
             self.layers.append(layers)
 
-        # One temporal block after each of the first three transitions (dimension-preserving)
         self.temporal_modules = nn.ModuleList(
             [
                 LightweightTemporalTransformer(
@@ -588,8 +465,15 @@ class BRAVE(nn.Module):
                     mlp_ratio=mlp_ratio, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate,
                     norm_layer=norm_layer,
                 ),
+                LightweightTemporalTransformer(
+                    dim=768, num_heads=6, num_frames=num_frames, num_layers=2,
+                    mlp_ratio=mlp_ratio, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate,
+                    norm_layer=norm_layer,
+                ),
             ]
         )
+        if len(self.temporal_modules) != self.num_layers:
+            raise ValueError("BRAVE requires one temporal module for each Swin stage")
 
         self.norm = norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
@@ -607,7 +491,7 @@ class BRAVE(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def _time_batch_merge_to_nchw(self, x):
-        """Merge time into batch: [B, T, H, W, C] or [B, T, C, H, W] → [B*T, C, H, W]."""
+
         if x.ndim != 5:
             raise ValueError(f"BRAVE expects a 5D video tensor, got ndim={x.ndim}")
         B, T = x.shape[0], x.shape[1]
@@ -631,8 +515,7 @@ class BRAVE(nn.Module):
 
         for i, layer in enumerate(self.layers):
             y, H, W = layer(y, H, W)
-            if i < len(self.temporal_modules):
-                y = self.temporal_modules[i](y, H, W)
+            y = self.temporal_modules[i](y, H, W)
 
         y = self.norm(y)
         L, C = y.shape[1], y.shape[2]
@@ -645,7 +528,7 @@ class BRAVE(nn.Module):
 
 
 def swin_3D(num_classes: int = 2, **kwargs):
-    """Factory: BRAVE = Swin backbone + lightweight temporal Transformers after each patch merge."""
+
     model = BRAVE(
         in_chans=3,
         patch_size=4,
@@ -659,10 +542,8 @@ def swin_3D(num_classes: int = 2, **kwargs):
     return model
 
 
-# Backward-compatible name for code that still imports SwinTransformer3D
 SwinTransformer3D = BRAVE
 
 
 def swin3D(num_classes: int = 1000, **kwargs):
-    """Alias of ``swin_3D`` / ``BRAVE`` for legacy call sites."""
     return swin_3D(num_classes=num_classes, **kwargs)
