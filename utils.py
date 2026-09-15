@@ -13,68 +13,50 @@ import matplotlib.pyplot as plt
 
 
 def read_split_data(root: str, val_rate: float = 0.2):
-    random.seed(0)  # 保证随机结果可复现
+    random.seed(0)
     assert os.path.exists(root), "dataset root: {} does not exist.".format(root)
 
-    # 遍历文件夹，一个文件夹对应一个类别
     flower_class = [cla for cla in os.listdir(root) if os.path.isdir(os.path.join(root, cla))]
-    # 排序，保证各平台顺序一致
     flower_class.sort()
-    # 生成类别名称以及对应的数字索引
     class_indices = dict((k, v) for v, k in enumerate(flower_class))
     json_str = json.dumps(dict((val, key) for key, val in class_indices.items()), indent=4)
     with open('class_indices.json', 'w') as json_file:
         json_file.write(json_str)
 
-    train_images_path = []  # 存储训练集的所有图片路径
-    train_images_label = []  # 存储训练集图片对应索引信息
-    val_images_path = []  # 存储验证集的所有图片路径
-    val_images_label = []  # 存储验证集图片对应索引信息
-    every_class_num = []  # 存储每个类别的样本总数
-    supported = [".jpg", ".JPG", ".png", ".PNG"]  # 支持的文件后缀类型
-    # 遍历每个文件夹下的文件
+    train_images_path = []
+    train_images_label = []
+    val_images_path = []
+    val_images_label = []
+    every_class_num = []
+    supported = [".jpg", ".JPG", ".png", ".PNG"]
     for cla in flower_class:
         cla_path = os.path.join(root, cla)
-        # 遍历获取supported支持的所有文件路径
         images = [os.path.join(root, cla, i) for i in os.listdir(cla_path)
                   if os.path.splitext(i)[-1] in supported]
-        # 排序，保证各平台顺序一致
         images.sort()
-        # 获取该类别对应的索引
         image_class = class_indices[cla]
-        # 记录该类别的样本数量
         every_class_num.append(len(images))
-        # 按比例随机采样验证样本
         val_path = random.sample(images, k=int(len(images) * val_rate))
 
         for img_path in images:
-            if img_path in val_path:  # 如果该路径在采样的验证集样本中则存入验证集
+            if img_path in val_path:
                 val_images_path.append(img_path)
                 val_images_label.append(image_class)
-            else:  # 否则存入训练集
+            else:
                 train_images_path.append(img_path)
                 train_images_label.append(image_class)
 
-    print("{} images were found in the dataset.".format(sum(every_class_num)))
-    print("{} images for training.".format(len(train_images_path)))
-    print("{} images for validation.".format(len(val_images_path)))
     assert len(train_images_path) > 0, "number of training images must greater than 0."
     assert len(val_images_path) > 0, "number of validation images must greater than 0."
 
     plot_image = False
     if plot_image:
-        # 绘制每种类别个数柱状图
         plt.bar(range(len(flower_class)), every_class_num, align='center')
-        # 将横坐标0,1,2,3,4替换为相应的类别名称
         plt.xticks(range(len(flower_class)), flower_class)
-        # 在柱状图上添加数值标签
         for i, v in enumerate(every_class_num):
             plt.text(x=i, y=v + 5, s=str(v), ha='center')
-        # 设置x坐标
         plt.xlabel('image class')
-        # 设置y坐标
         plt.ylabel('number of images')
-        # 设置柱状图的标题
         plt.title('flower class distribution')
         plt.show()
 
@@ -93,15 +75,13 @@ def plot_data_loader_image(data_loader):
     for data in data_loader:
         images, labels = data
         for i in range(plot_num):
-            # [C, H, W] -> [H, W, C]
             img = images[i].numpy().transpose(1, 2, 0)
-            # 反Normalize操作
             img = (img * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]) * 255
             label = labels[i].item()
             plt.subplot(1, plot_num, i+1)
             plt.xlabel(class_indices[str(label)])
-            plt.xticks([])  # 去掉x轴的刻度
-            plt.yticks([])  # 去掉y轴的刻度
+            plt.xticks([])
+            plt.yticks([])
             plt.imshow(img.astype('uint8'))
         plt.show()
 
@@ -120,8 +100,8 @@ def read_pickle(file_name: str) -> list:
 def train_one_epoch(model, optimizer, data_loader, device, epoch):
     model.train()
     loss_function = torch.nn.CrossEntropyLoss()
-    accu_loss = torch.zeros(1).to(device)  # 累计损失
-    accu_num = torch.zeros(1).to(device)   # 累计预测正确的样本数
+    accu_loss = torch.zeros(1).to(device)
+    accu_num = torch.zeros(1).to(device)
     optimizer.zero_grad()
 
     sample_num = 0
@@ -158,8 +138,8 @@ def evaluate(model, data_loader, device, epoch):
 
     model.eval()
 
-    accu_num = torch.zeros(1).to(device)   # 累计预测正确的样本数
-    accu_loss = torch.zeros(1).to(device)  # 累计损失
+    accu_num = torch.zeros(1).to(device)
+    accu_loss = torch.zeros(1).to(device)
 
     sample_num = 0
     data_loader = tqdm(data_loader, file=sys.stdout)
@@ -180,9 +160,8 @@ def evaluate(model, data_loader, device, epoch):
 
     return accu_loss.item() / (step + 1), accu_num.item() / sample_num
 
+
 class ActivationsAndGradients:
-    """ Class for extracting activations and
-    registering gradients from targeted intermediate layers """
 
     def __init__(self, model, target_layers, reshape_transform):
         self.model = model
@@ -194,7 +173,6 @@ class ActivationsAndGradients:
             self.handles.append(
                 target_layer.register_forward_hook(
                     self.save_activation))
-            # Backward compatibility with older pytorch versions:
             if hasattr(target_layer, 'register_full_backward_hook'):
                 self.handles.append(
                     target_layer.register_full_backward_hook(
@@ -211,7 +189,6 @@ class ActivationsAndGradients:
         self.activations.append(activation.cpu().detach())
 
     def save_gradient(self, module, grad_input, grad_output):
-        # Gradients are computed in reverse order
         grad = grad_output[0]
         if self.reshape_transform is not None:
             grad = self.reshape_transform(grad)
@@ -241,10 +218,6 @@ class GradCAM:
             self.model = model.cuda()
         self.activations_and_grads = ActivationsAndGradients(
             self.model, target_layers, reshape_transform)
-
-    """ Get a vector of weights for every channel in the target layer.
-        Methods that return weights channels,
-        will typically need to only implement this function. """
 
     @staticmethod
     def get_cam_weights(grads):
@@ -277,11 +250,10 @@ class GradCAM:
         target_size = self.get_target_width_height(input_tensor)
 
         cam_per_target_layer = []
-        # Loop over the saliency image from every layer
 
         for layer_activations, layer_grads in zip(activations_list, grads_list):
             cam = self.get_cam_image(layer_activations, layer_grads)
-            cam[cam < 0] = 0  # works like mute the min-max scale in the function of scale_cam_image
+            cam[cam < 0] = 0
             scaled = self.scale_cam_image(cam, target_size)
             cam_per_target_layer.append(scaled[:, None, :])
 
@@ -311,14 +283,12 @@ class GradCAM:
         if self.cuda:
             input_tensor = input_tensor.cuda()
 
-        # 正向传播得到网络输出logits(未经过softmax)
         output = self.activations_and_grads(input_tensor)
         if isinstance(target_category, int):
             target_category = [target_category] * input_tensor.size(0)
 
         if target_category is None:
             target_category = np.argmax(output.cpu().data.numpy(), axis=-1)
-            print(f"category id: {target_category}")
         else:
             assert (len(target_category) == input_tensor.size(0))
 
@@ -326,15 +296,6 @@ class GradCAM:
         loss = self.get_loss(output, target_category)
         loss.backward(retain_graph=True)
 
-        # In most of the saliency attribution papers, the saliency is
-        # computed with a single target layer.
-        # Commonly it is the last convolutional layer.
-        # Here we support passing a list with multiple target layers.
-        # It will compute the saliency image for every image,
-        # and then aggregate them (with a default mean aggregation).
-        # This gives you more flexibility in case you just want to
-        # use all conv layers for example, all Batchnorm layers,
-        # or something else.
         cam_per_layer = self.compute_cam_per_layer(input_tensor)
         return self.aggregate_multi_layers(cam_per_layer)
 
@@ -347,9 +308,6 @@ class GradCAM:
     def __exit__(self, exc_type, exc_value, exc_tb):
         self.activations_and_grads.release()
         if isinstance(exc_value, IndexError):
-            # Handle IndexError here...
-            print(
-                f"An exception occurred in CAM with block: {exc_type}. Message: {exc_value}")
             return True
 
 
@@ -357,15 +315,6 @@ def show_cam_on_image(img: np.ndarray,
                       mask: np.ndarray,
                       use_rgb: bool = False,
                       colormap: int = cv2.COLORMAP_JET) -> np.ndarray:
-    """ This function overlays the cam mask on the image as an heatmap.
-    By default the heatmap is in BGR format.
-
-    :param img: The base image in RGB or BGR format.
-    :param mask: The cam mask.
-    :param use_rgb: Whether to use an RGB or BGR heatmap, this should be set to True if 'img' is in RGB format.
-    :param colormap: The OpenCV colormap to be used.
-    :returns: The default image with the cam overlay.
-    """
 
     heatmap = cv2.applyColorMap(np.uint8(255 * mask), colormap)
     if use_rgb:
