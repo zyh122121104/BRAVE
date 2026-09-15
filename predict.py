@@ -1,12 +1,5 @@
-"""
-Evaluate BRAVE on videos listed in an Excel file.
-
-Supports the same grouped-row format as the legacy 3D scripts: consecutive rows
-with a non-empty ``ID`` are clips belonging to one case; a delimiter row
-(``ID`` empty / ``stop`` / blank) ends the group and uses the label from the
-last clip row in that group.
-"""
 import argparse
+import json
 import os
 
 import numpy as np
@@ -19,13 +12,13 @@ from torchvision import transforms
 from model import BRAVE
 
 
-def build_transform(img_size=224):
+def build_transform(img_size, mean, std):
     return transforms.Compose(
         [
             transforms.Resize(256),
             transforms.CenterCrop(img_size),
             transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+            transforms.Normalize(mean, std),
         ]
     )
 
@@ -51,7 +44,6 @@ def is_sample_row(row, id_col="ID"):
 
 
 def flush_group(x_sum, n, current_label, num_classes, out_fp, out_id, results):
-    """Finalize one patient / group; reset accumulator."""
     empty = np.zeros((num_classes,), dtype=np.float64)
     if n == 0 or current_label is None:
         return empty, 0, None
@@ -70,9 +62,34 @@ def flush_group(x_sum, n, current_label, num_classes, out_fp, out_id, results):
     return empty, 0, None
 
 
+def resolve_normalization_stats(args, checkpoint_path):
+    stats_path = args.normalization_json
+    if not stats_path:
+        candidate = os.path.join(os.path.dirname(checkpoint_path), "normalization.json")
+        if os.path.isfile(candidate):
+            stats_path = candidate
+
+    if stats_path:
+        with open(stats_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        mean = payload["mean"]
+        std = payload["std"]
+    elif args.norm_mean is not None and args.norm_std is not None:
+        mean = args.norm_mean
+        std = args.norm_std
+    else:
+        raise ValueError(
+            "Training-set normalization is required. Place normalization.json "
+            "beside the checkpoint or provide --normalization-json."
+        )
+
+    if len(mean) != 3 or len(std) != 3 or any(value <= 0 for value in std):
+        raise ValueError("Normalization mean and standard deviation must contain three RGB values")
+    return mean, std
+
+
 def main(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    transform = build_transform(args.img_size)
 
     if args.weights_dir is not None and args.epoch is not None:
         ckpt = os.path.join(args.weights_dir, "model-{}.pth".format(args.epoch))
@@ -81,10 +98,20 @@ def main(args):
     if not ckpt or not os.path.isfile(ckpt):
         raise FileNotFoundError("Checkpoint not found: {}".format(ckpt))
 
+    normalization_mean, normalization_std = resolve_normalization_stats(args, ckpt)
+    transform = build_transform(
+        args.img_size, normalization_mean, normalization_std
+    )
+
     model = BRAVE(num_classes=args.num_classes, num_frames=args.num_frames).to(device)
-    model.load_state_dict(torch.load(ckpt, map_location=device))
+    try:
+        model.load_state_dict(torch.load(ckpt, map_location=device))
+    except RuntimeError as e:
+        raise RuntimeError(
+            "Checkpoint is incompatible with the four-stage frame-level LTTM architecture. "
+            "Use weights trained with the current model.py."
+        ) from e
     model.eval()
-    print("Loaded weights:", ckpt)
 
     data = pd.read_excel(args.excel, dtype=str)
     if args.label_col not in data.columns:
@@ -200,6 +227,14 @@ if __name__ == "__main__":
     parser.add_argument("--num-classes", type=int, default=2)
     parser.add_argument("--num-frames", type=int, default=16)
     parser.add_argument("--img-size", type=int, default=224)
+    parser.add_argument(
+        "--normalization-json",
+        type=str,
+        default="",
+        help="Training-set normalization JSON; auto-detected beside the checkpoint",
+    )
+    parser.add_argument("--norm-mean", type=float, nargs=3, default=None)
+    parser.add_argument("--norm-std", type=float, nargs=3, default=None)
     parser.add_argument(
         "--label-col",
         type=str,
